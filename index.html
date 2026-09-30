@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Slender Fortress - loading</title>
+<!--
+  Slender Fortress loading screen (camcorder / found-footage, matches the map roulette).
+  Written in plain ES5 + basic CSS on purpose: GMod's default branch uses a very old
+  built-in browser, so modern JS/CSS would silently break for many players.
+
+  GMod calls these functions while a player loads:
+    GameDetails(servername, serverurl, mapname, maxplayers, steamid, gamemode, volume, language)
+    SetFilesTotal(total)  SetFilesNeeded(needed)  DownloadingFile(file)  SetStatusChanged(status)
+-->
+<style>
+	html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+	body { font-family: "Courier New", Courier, monospace; color: #78ffaa; }
+
+	#static { position: absolute; left: 0; top: 0; width: 100%; height: 100%; opacity: 0.55;
+		image-rendering: pixelated; image-rendering: -webkit-optimize-contrast; }
+	#scan { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+		background-image: -webkit-linear-gradient(top, rgba(0,0,0,0) 66%, rgba(0,0,0,0.45) 66%);
+		background-image: linear-gradient(to bottom, rgba(0,0,0,0) 66%, rgba(0,0,0,0.45) 66%);
+		background-size: 100% 3px; }
+	#vignette { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+		background: -webkit-radial-gradient(center, ellipse, rgba(0,0,0,0) 45%, rgba(0,0,0,0.85) 100%);
+		background: radial-gradient(ellipse at center, rgba(0,0,0,0) 45%, rgba(0,0,0,0.85) 100%); }
+	#track { position: absolute; left: 0; width: 100%; height: 14px; background: rgba(255,255,255,0.05); }
+
+	/* viewfinder corners */
+	.corner { position: absolute; width: 36px; height: 36px; border-color: rgba(55,150,120,0.75); border-style: solid; }
+	#c1 { left: 34px;  top: 30px;    border-width: 2px 0 0 2px; }
+	#c2 { right: 34px; top: 30px;    border-width: 2px 2px 0 0; }
+	#c3 { left: 34px;  bottom: 30px; border-width: 0 0 2px 2px; }
+	#c4 { right: 34px; bottom: 30px; border-width: 0 2px 2px 0; }
+
+	.osd { position: absolute; font-size: 18px; font-weight: bold; letter-spacing: 1px; }
+	#rec  { left: 56px;  top: 46px; }
+	#dot  { display: inline-block; width: 13px; height: 13px; border-radius: 7px; background: #78ffaa;
+		margin-right: 8px; vertical-align: -1px; }
+	#cam  { right: 56px; top: 46px; }
+	#counter { left: 56px; bottom: 46px; }
+	#date { right: 56px; bottom: 46px; }
+
+	#center { position: absolute; left: 0; width: 100%; top: 50%; margin-top: -210px; text-align: center; }
+	#head { font-size: 16px; color: #6e8c7d; letter-spacing: 3px; }
+	#frame { position: relative; width: 220px; height: 220px; margin: 18px auto 0 auto;
+		border: 2px solid #78ffaa; background: #050706; overflow: hidden; }
+	#thumb { width: 220px; height: 220px; display: block; }
+	#tint { position: absolute; left: 0; top: 0; width: 100%; height: 100%; background: rgba(10,40,24,0.35); }
+	#nosig { position: absolute; left: 0; top: 0; width: 100%; height: 100%; line-height: 220px;
+		color: #37967a; font-size: 18px; font-weight: bold; display: none; }
+	#mapname { font-size: 46px; font-weight: bold; margin-top: 18px; letter-spacing: 2px; }
+	#line { font-size: 16px; color: #6e8c7d; margin-top: 6px; height: 20px; }
+
+	#tape { width: 520px; margin: 26px auto 0 auto; text-align: left; }
+	#barbox { height: 14px; border: 1px solid #37967a; padding: 2px; }
+	#bar { height: 14px; width: 0%; background: #78ffaa; }
+	#tapeinfo { font-size: 14px; color: #6e8c7d; margin-top: 8px; white-space: nowrap; overflow: hidden; }
+	#pct { float: right; color: #78ffaa; }
+
+	.glitch { left: 6px !important; }
+</style>
+</head>
+<body>
+	<canvas id="static" width="240" height="135"></canvas>
+
+	<div id="center">
+		<div id="head">PLAY &#9654;&nbsp;&nbsp;YOU WERE TAKEN TO</div>
+		<div id="frame">
+			<img id="thumb" alt="">
+			<div id="tint"></div>
+			<div id="nosig">NO SIGNAL</div>
+		</div>
+		<div id="mapname">...</div>
+		<div id="line">rewinding tape...</div>
+		<div id="tape">
+			<div id="barbox"><div id="bar"></div></div>
+			<div id="tapeinfo"><span id="pct">000%</span><span id="status">inserting tape...</span></div>
+		</div>
+	</div>
+
+	<div id="track"></div>
+	<div id="scan"></div>
+	<div id="vignette"></div>
+	<div class="corner" id="c1"></div><div class="corner" id="c2"></div>
+	<div class="corner" id="c3"></div><div class="corner" id="c4"></div>
+	<div class="osd" id="rec"><span id="dot"></span>REC</div>
+	<div class="osd" id="cam">CAM 04</div>
+	<div class="osd" id="counter">SP 0:00:00</div>
+	<div class="osd" id="date"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Pretty names - same as SF_MapRotation.Maps. Unknown maps get a cleaned name.
+// ---------------------------------------------------------------------------
+var NAMES = {
+	slender_4way_v3_fix: "4-Way", slender_arizona_b1: "Arizona",
+	slender_asylum_classic1a: "Asylum Classic", slender_asylum_redux_fix2: "Asylum Redux",
+	slender_bloodwood_s2: "Bloodwood", slender_broken_v2: "Broken",
+	slender_claustrophobia_b2b: "Claustrophobia", slender_cry_of_fear_a3: "Cry of Fear",
+	slender_desecration_mb2c: "Desecration", slender_dustbowl_b3: "Dustbowl",
+	slender_elementary_b2d: "Elementary", slender_underground_rc1a: "Underground",
+	slender_enclosed_b1c: "Enclosed", slender_weepers_b3b: "Weepers",
+	slender_abandoned_b3c: "Abandoned", slender_alpha_complex_b1: "Alpha Complex",
+	slender_biotics_lab_v1b: "Biotics Lab", slender_fiveroundsatfreddys_b6: "Five Rounds at Freddy's",
+	slender_dawn_of_time_v2: "Dawn of Time", slender_decay_b5c: "Decay"
+};
+
+var LINES = [
+	"rewinding tape...", "it followed you here.", "don't look behind you.",
+	"the pages are still waiting.", "you can't turn it off.", "something is on the tape.",
+	"it was here before you.", "keep the flashlight on."
+];
+
+function $(id) { return document.getElementById(id); }
+function setText(id, t) { var e = $(id); if (e) { e.textContent = t; } }
+function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+function prettyName(map) {
+	if (NAMES[map]) { return NAMES[map]; }
+	var s = map.replace(/^(slender|sf2|sf)_/i, "").replace(/_(v?\d+[a-z]?|[abr]c?\d+[a-z]*|fix\d*|final)$/i, "");
+	return s.replace(/_/g, " ");
+}
+
+// ---------------------------------------------------------------------------
+// Map + thumbnail (local game files via asset://, first one that loads wins)
+// ---------------------------------------------------------------------------
+var currentMap = "";
+function setMap(map) {
+	if (!map || map === currentMap) { return; }
+	currentMap = map;
+	setText("mapname", prettyName(map).toUpperCase());
+
+	var tries = [
+		"asset://garrysmod/materials/sf_mapicons/" + map + ".png",
+		"asset://garrysmod/maps/thumb/" + map + ".png",
+		"asset://garrysmod/maps/" + map + ".png"
+	];
+	var img = $("thumb"), i = 0;
+	img.onerror = function () {
+		i++;
+		if (i < tries.length) { img.src = tries[i]; }
+		else { img.style.display = "none"; $("nosig").style.display = "block"; }
+	};
+	img.style.display = "block";
+	$("nosig").style.display = "none";
+	img.src = tries[0];
+}
+
+// URL fallback: sv_loadingurl ".../index.html?map=%m&steamid=%s"
+(function () {
+	var m = /[?&]map=([^&]+)/.exec(window.location.search);
+	if (m) { setMap(decodeURIComponent(m[1])); }
+})();
+
+// ---------------------------------------------------------------------------
+// GMod callbacks
+// ---------------------------------------------------------------------------
+var filesTotal = 0, filesNeeded = 0;
+
+function updateBar() {
+	if (filesTotal <= 0) { return; }
+	var p = Math.max(0, Math.min(1, (filesTotal - filesNeeded) / filesTotal));
+	$("bar").style.width = Math.floor(p * 100) + "%";
+	var n = Math.floor(p * 100);
+	setText("pct", (n < 100 ? (n < 10 ? "00" : "0") : "") + n + "%");
+}
+
+function GameDetails(servername, serverurl, mapname, maxplayers, steamid, gamemode, volume, language) {
+	setMap(mapname);
+}
+function SetFilesTotal(total) { filesTotal = total; updateBar(); }
+function SetFilesNeeded(needed) { filesNeeded = needed; updateBar(); }
+function DownloadingFile(fileName) {
+	var f = String(fileName).split("/").pop();
+	setText("status", "reading: " + f);
+}
+function SetStatusChanged(status) {
+	setText("status", String(status).toLowerCase());
+	if (/sending client info|client info/i.test(status)) {
+		$("bar").style.width = "100%";
+		setText("pct", "100%");
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Camcorder effects: static, rolling tracking line, REC blink, tape counter,
+// small glitches (no full-screen flicker).
+// ---------------------------------------------------------------------------
+var start = new Date().getTime();
+var canvas = $("static"), ctx = canvas.getContext("2d");
+var imgData = ctx.createImageData(canvas.width, canvas.height);
+
+function drawStatic() {
+	var d = imgData.data, len = d.length, i, v;
+	for (i = 0; i < len; i += 4) {
+		v = Math.random() < 0.18 ? (40 + Math.random() * 110) : 0;
+		d[i] = v; d[i + 1] = v + (v ? 8 : 0); d[i + 2] = v; d[i + 3] = 255;
+	}
+	ctx.putImageData(imgData, 0, 0);
+}
+
+var MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+function tick() {
+	var now = new Date(), t = (now.getTime() - start) / 1000;
+	drawStatic();
+
+	var h = window.innerHeight || document.documentElement.clientHeight;
+	$("track").style.top = (((t * 70) % (h + 60)) - 30) + "px";
+	$("dot").style.visibility = (Math.floor(t * 1.5) % 2 === 0) ? "visible" : "hidden";
+
+	var s = Math.floor(t);
+	setText("counter", "SP " + Math.floor(s / 3600) + ":" + pad(Math.floor(s / 60) % 60) + ":" + pad(s % 60));
+	setText("date", MONTHS[now.getMonth()] + " " + pad(now.getDate()) + " " + now.getFullYear() +
+		"  " + pad(now.getHours()) + ":" + pad(now.getMinutes()));
+}
+setInterval(tick, 60);
+tick();
+
+function glitch() {
+	var c = $("center");
+	c.className = "glitch";
+	setTimeout(function () { c.className = ""; }, 90 + Math.random() * 70);
+	setTimeout(glitch, 1800 + Math.random() * 2700);
+}
+setTimeout(glitch, 2000);
+
+var lineIndex = 0;
+setInterval(function () {
+	lineIndex = (lineIndex + 1) % LINES.length;
+	setText("line", LINES[lineIndex]);
+}, 5000);
+</script>
+</body>
+</html>
